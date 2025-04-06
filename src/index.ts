@@ -1,5 +1,3 @@
-import { URL } from 'url';
-
 /**
  * Input parameters for image generation
  */
@@ -121,7 +119,16 @@ export class WaveSpeed {
     pollInterval?: number,
     timeout?: number
   } = {}) {
-    this.apiKey = apiKey || process.env.WAVESPEED_API_KEY || '';
+    // Browser-friendly environment variable handling
+    const getEnvVar = (name: string): string | undefined => {
+      // Try to get from process.env for Node.js environments
+      if (typeof process !== 'undefined' && process.env && process.env[name]) {
+        return process.env[name];
+      }
+      return undefined;
+    };
+
+    this.apiKey = apiKey || getEnvVar('WAVESPEED_API_KEY') || '';
     
     if (!this.apiKey) {
       throw new Error('API key is required. Provide it as a parameter or set the WAVESPEED_API_KEY environment variable.');
@@ -131,8 +138,8 @@ export class WaveSpeed {
       this.baseUrl = options.baseUrl;
     }
 
-    this.pollInterval = options.pollInterval || Number(process.env.WAVESPEED_POLL_INTERVAL) || 1;
-    this.timeout = options.timeout || Number(process.env.WAVESPEED_TIMEOUT) || 60;
+    this.pollInterval = options.pollInterval || Number(getEnvVar('WAVESPEED_POLL_INTERVAL')) || 1;
+    this.timeout = options.timeout || Number(getEnvVar('WAVESPEED_TIMEOUT')) || 60;
   }
 
   /**
@@ -151,13 +158,15 @@ export class WaveSpeed {
       'Content-Type': 'application/json'
     };
     
+    // Use AbortController for timeout (supported in modern browsers)
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeout);
     
     try {
-      // Construct the full URL by joining baseUrl and path
+      // Use browser's built-in URL API
       const url = new URL(path, this.baseUrl).toString();
       
+      // Use the global fetch API available in browsers
       const response = await fetch(url, {
         ...fetchOptions,
         signal: controller.signal
@@ -207,3 +216,8 @@ export class WaveSpeed {
 
 // Export default and named exports for different import styles
 export default WaveSpeed;
+
+// Add browser global for UMD-style usage
+if (typeof window !== 'undefined') {
+  (window as any).WaveSpeed = WaveSpeed;
+}
