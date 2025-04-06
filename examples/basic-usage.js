@@ -116,7 +116,7 @@ async function generateImageWithOptions() {
 // Run the examples
 if (require.main === module) {
   // Uncomment one of these to run the example
-  // generateImageSync();
+  generateImageSync();
   // generateImageAsync();
   // generateImageWithOptions();
   console.log('Uncomment one of the example functions to run it');

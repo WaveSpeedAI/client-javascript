@@ -19,6 +19,7 @@ export interface PredictionUrls {
  */
 export interface RequestOptions extends RequestInit {
   timeout?: number;
+  maxRetries?: number;
 }
 
 /**
@@ -158,24 +159,88 @@ export class WaveSpeed {
       'Content-Type': 'application/json'
     };
     
-    // Use AbortController for timeout (supported in modern browsers)
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeout);
+    // Default retry options
+    const maxRetries = options.maxRetries || 3;
+    const initialBackoff = 1000; // 1 second
+    let retryCount = 0;
     
-    try {
-      // Use browser's built-in URL API
-      const url = new URL(path, this.baseUrl).toString();
+    // Function to determine if a response should be retried
+    const shouldRetry = (response: Response): boolean => {
+      // Retry on rate limit (429) for all requests
+      // For GET requests, also retry on server errors (5xx)
+      const method = (fetchOptions.method || 'GET').toUpperCase();
+      return response.status === 429 || (method === 'GET' && response.status >= 500);
+    };
+
+    while (true) {
+      // Use AbortController for timeout (supported in modern browsers)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
       
-      // Use the global fetch API available in browsers
-      const response = await fetch(url, {
-        ...fetchOptions,
-        signal: controller.signal
-      });
-      
-      return response;
-    } finally {
-      clearTimeout(id);
+      try {
+        // Construct the full URL by joining baseUrl and path
+        const url = new URL(path.startsWith('/') ? path.substring(1) : path, this.baseUrl).toString();
+        
+        const response = await fetch(url, {
+          ...fetchOptions,
+          signal: controller.signal
+        });
+        
+        // If the response is successful or we've used all retries, return it
+        if (response.ok || !shouldRetry(response) || retryCount >= maxRetries) {
+          return response;
+        }
+        
+        // Otherwise, increment retry count and wait before retrying
+        retryCount++;
+        const backoffTime = this._getBackoffTime(retryCount, initialBackoff);
+        
+        // Log retry information if console is available
+        if (typeof console !== 'undefined') {
+          console.warn(`Request failed with status ${response.status}. Retrying (${retryCount}/${maxRetries}) in ${Math.round(backoffTime)}ms...`);
+        }
+        
+        // Wait for backoff time before retrying
+        await new Promise(resolve => setTimeout(resolve, backoffTime));
+        
+      } catch (error) {
+        // If the error is due to timeout or network issues and we have retries left
+        if (error instanceof Error && 
+            (error.name === 'AbortError' || error.name === 'TypeError') && 
+            retryCount < maxRetries) {
+          
+          retryCount++;
+          const backoffTime = this._getBackoffTime(retryCount, initialBackoff);
+          
+          // Log retry information if console is available
+          if (typeof console !== 'undefined') {
+            console.warn(`Request failed with error: ${error.message}. Retrying (${retryCount}/${maxRetries}) in ${Math.round(backoffTime)}ms...`);
+          }
+          
+          // Wait for backoff time before retrying
+          await new Promise(resolve => setTimeout(resolve, backoffTime));
+          
+        } else {
+          // If we're out of retries or it's a non-retryable error, throw it
+          throw error;
+        }
+      } finally {
+        clearTimeout(timeoutId);
+      }
     }
+  }
+
+  /**
+   * Calculate backoff time with exponential backoff and jitter
+   * @param retryCount Current retry attempt number
+   * @param initialBackoff Initial backoff time in ms
+   * @returns Backoff time in ms
+   * @private
+   */
+  _getBackoffTime(retryCount: number, initialBackoff: number): number {
+    const backoff = initialBackoff * Math.pow(2, retryCount);
+    // Add jitter (random value between 0 and backoff/2)
+    return backoff + Math.random() * (backoff / 2);
   }
 
   /**
