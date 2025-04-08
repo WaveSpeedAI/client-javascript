@@ -20,6 +20,7 @@ export interface PredictionUrls {
 export interface RequestOptions extends RequestInit {
   timeout?: number;
   maxRetries?: number;
+  webhook?: string;
 }
 
 /**
@@ -139,8 +140,8 @@ export class WaveSpeed {
       this.baseUrl = options.baseUrl;
     }
 
-    this.pollInterval = options.pollInterval || Number(getEnvVar('WAVESPEED_POLL_INTERVAL')) || 1;
-    this.timeout = options.timeout || Number(getEnvVar('WAVESPEED_TIMEOUT')) || 60;
+    this.pollInterval = options.pollInterval || Number(getEnvVar('WAVESPEED_POLL_INTERVAL')) || 0.5;
+    this.timeout = options.timeout || Number(getEnvVar('WAVESPEED_TIMEOUT')) || 120;
   }
 
   /**
@@ -263,7 +264,14 @@ export class WaveSpeed {
    * @param options Additional fetch options
    */
   async create(modelId: string, input: Record<string, any>, options?: RequestOptions): Promise<Prediction> {
-    const response = await this.fetchWithTimeout(`${modelId}`, {
+    
+    // Build URL with webhook if provided in options
+    let url = `${modelId}`;
+    if (options?.webhook) {
+      url += `?webhook=${options.webhook}`;
+    }
+    
+    const response = await this.fetchWithTimeout(url, {
       method: 'POST',
       body: JSON.stringify(input),
       ...options
@@ -275,6 +283,9 @@ export class WaveSpeed {
     }
     
     const data = await response.json();
+    if (data.code !== 200) {
+      throw new Error(`Failed to create prediction: ${data.code} ${data}`);
+    }
     return new Prediction(data.data, this);
   }
 }

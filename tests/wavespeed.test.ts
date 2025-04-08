@@ -37,7 +37,7 @@ describe('WaveSpeed Client', () => {
     test('should initialize with API key from environment variable', () => {
       process.env.WAVESPEED_API_KEY = 'env-api-key';
       const client = new WaveSpeed();
-      expect(client).toHaveProperty('pollInterval', 1);
+      expect(client).toHaveProperty('pollInterval', 0.5);
     });
 
     test('should throw error if no API key is provided', () => {
