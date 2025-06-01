@@ -14,6 +14,17 @@ export interface PredictionUrls {
   get: string;
 }
 
+export interface UploadFileResp {
+  code: number;
+  message: string;
+  data: {
+    type: string;
+    download_url: string;
+    filename: string;
+    size: number;
+  };
+}
+
 /**
  * Request options for fetch
  */
@@ -21,6 +32,7 @@ export interface RequestOptions extends RequestInit {
   timeout?: number;
   maxRetries?: number;
   webhook?: string;
+  isUpload?: boolean;
 }
 
 /**
@@ -37,7 +49,7 @@ export class Prediction {
   created_at: string;
   error?: string;
   executionTime?: number;
-  
+
   private client: WaveSpeed;
 
   constructor(data: any, client: WaveSpeed) {
@@ -85,18 +97,18 @@ export class Prediction {
    */
   async reload(): Promise<Prediction> {
     const response = await this.client.fetchWithTimeout(`predictions/${this.id}/result`);
-    
+
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(`Failed to reload prediction: ${response.status} ${errorText}`);
     }
-    
+
     const data = await response.json();
     const updatedPrediction = new Prediction(data.data, this.client);
-    
+
     // Update this instance with new data
     Object.assign(this, updatedPrediction);
-    
+
     return this;
   }
 }
@@ -106,7 +118,7 @@ export class Prediction {
  */
 export class WaveSpeed {
   private apiKey: string;
-  private baseUrl: string = 'https://api.wavespeed.ai/api/v2/';
+  private baseUrl: string = 'https://api.wavespeed.ai/api/v3/';
   readonly pollInterval: number;
   readonly timeout: number;
 
@@ -131,7 +143,7 @@ export class WaveSpeed {
     };
 
     this.apiKey = apiKey || getEnvVar('WAVESPEED_API_KEY') || '';
-    
+
     if (!this.apiKey) {
       throw new Error('API key is required. Provide it as a parameter or set the WAVESPEED_API_KEY environment variable.');
     }
@@ -152,19 +164,28 @@ export class WaveSpeed {
    */
   async fetchWithTimeout(path: string, options: RequestOptions = {}): Promise<Response> {
     const { timeout = this.timeout * 1000, ...fetchOptions } = options;
-    
+
     // Ensure headers exist
-    fetchOptions.headers = {
-      ...fetchOptions.headers,
-      'Authorization': `Bearer ${this.apiKey}`,
-      'Content-Type': 'application/json'
-    };
-    
+    if (options.isUpload) {
+      fetchOptions.headers = {
+        'Authorization': `Bearer ${this.apiKey}`,
+        ...(fetchOptions.headers || {}),
+      };
+
+    } else {
+      fetchOptions.headers = {
+        'Authorization': `Bearer ${this.apiKey}`,
+        'content-type': 'application/json',
+        ...(fetchOptions.headers || {}),
+      };
+
+    }
+
     // Default retry options
     const maxRetries = options.maxRetries || 3;
     const initialBackoff = 1000; // 1 second
     let retryCount = 0;
-    
+
     // Function to determine if a response should be retried
     const shouldRetry = (response: Response): boolean => {
       // Retry on rate limit (429) for all requests
@@ -177,50 +198,50 @@ export class WaveSpeed {
       // Use AbortController for timeout (supported in modern browsers)
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeout);
-      
+
       try {
         // Construct the full URL by joining baseUrl and path
         const url = new URL(path.startsWith('/') ? path.substring(1) : path, this.baseUrl).toString();
-        
+
         const response = await fetch(url, {
           ...fetchOptions,
           signal: controller.signal
         });
-        
+
         // If the response is successful or we've used all retries, return it
         if (response.ok || !shouldRetry(response) || retryCount >= maxRetries) {
           return response;
         }
-        
+
         // Otherwise, increment retry count and wait before retrying
         retryCount++;
         const backoffTime = this._getBackoffTime(retryCount, initialBackoff);
-        
+
         // Log retry information if console is available
         if (typeof console !== 'undefined') {
           console.warn(`Request failed with status ${response.status}. Retrying (${retryCount}/${maxRetries}) in ${Math.round(backoffTime)}ms...`);
         }
-        
+
         // Wait for backoff time before retrying
         await new Promise(resolve => setTimeout(resolve, backoffTime));
-        
+
       } catch (error) {
         // If the error is due to timeout or network issues and we have retries left
-        if (error instanceof Error && 
-            (error.name === 'AbortError' || error.name === 'TypeError') && 
-            retryCount < maxRetries) {
-          
+        if (error instanceof Error &&
+          (error.name === 'AbortError' || error.name === 'TypeError') &&
+          retryCount < maxRetries) {
+
           retryCount++;
           const backoffTime = this._getBackoffTime(retryCount, initialBackoff);
-          
+
           // Log retry information if console is available
           if (typeof console !== 'undefined') {
             console.warn(`Request failed with error: ${error.message}. Retrying (${retryCount}/${maxRetries}) in ${Math.round(backoffTime)}ms...`);
           }
-          
+
           // Wait for backoff time before retrying
           await new Promise(resolve => setTimeout(resolve, backoffTime));
-          
+
         } else {
           // If we're out of retries or it's a non-retryable error, throw it
           throw error;
@@ -264,31 +285,63 @@ export class WaveSpeed {
    * @param options Additional fetch options
    */
   async create(modelId: string, input: Record<string, any>, options?: RequestOptions): Promise<Prediction> {
-    
+
     // Build URL with webhook if provided in options
     let url = `${modelId}`;
     if (options?.webhook) {
       url += `?webhook=${options.webhook}`;
     }
-    
+
     const response = await this.fetchWithTimeout(url, {
       method: 'POST',
       body: JSON.stringify(input),
       ...options
     });
-    
+
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(`Failed to create prediction: ${response.status} ${errorText}`);
     }
-    
+
     const data = await response.json();
     if (data.code !== 200) {
       throw new Error(`Failed to create prediction: ${data.code} ${data}`);
     }
     return new Prediction(data.data, this);
   }
+
+  /**
+   * Upload a file (binary) to the /media/upload/binary endpoint
+   * @param filePath Absolute path to the file to upload
+   * @returns The API response JSON
+   */
+  /**
+   * Upload a file (binary) to the /media/upload/binary endpoint (browser Blob version)
+   * @param file Blob to upload
+   * @returns The API response JSON
+   */
+  async upload(file: Blob, options?: RequestOptions): Promise<string> {
+    const form = new FormData();
+    form.append('file', file);
+    // Only set Authorization header; browser will set Content-Type
+    if (options == null) {
+      options = { isUpload: true }
+    }
+    const response = await this.fetchWithTimeout('media/upload/binary', {
+      method: 'POST',
+      body: form,
+      ...options
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to upload file: ${response.status} ${errorText}`);
+    }
+    const resp: UploadFileResp = await response.json();
+    return resp.data.download_url
+  }
 }
+
+
 
 // Export default and named exports for different import styles
 export default WaveSpeed;
